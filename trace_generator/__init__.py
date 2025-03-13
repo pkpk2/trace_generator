@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple, Set
 import random
 import numpy as np
 from pydantic import BaseModel, Field
@@ -77,6 +77,36 @@ class TraceGenerator:
             metadata["table"] = random.choice(["users", "orders", "products", "inventory"])
         return metadata
 
+    def _create_trace(self, trace_id: str, service_name: str, service_type: str, parent_trace_id: Optional[str] = None) -> Trace:
+        """
+        Create a single trace with specific parameters, useful for manually building complex hierarchies.
+        
+        Args:
+            trace_id: The trace ID to use
+            service_name: Name of the service
+            service_type: Type of the service (proxy, web, database)
+            parent_trace_id: Optional parent trace ID
+            
+        Returns:
+            A new Trace object
+        """
+        group = random.randint(0, self.num_groups - 1)
+        start_time = datetime.now() + timedelta(seconds=random.random() * 3600)
+        duration = self._generate_duration(service_type, group)
+        status = self._generate_status(group)
+        metadata = self._generate_metadata(service_type)
+        
+        return Trace(
+            trace_id=trace_id,
+            service_name=service_name,
+            service_type=service_type,
+            start_time=start_time,
+            end_time=start_time + timedelta(seconds=duration),
+            status=status,
+            parent_trace_id=parent_trace_id,
+            metadata=metadata
+        )
+
     def generate_traces(self, num_traces: int = 100) -> List[Trace]:
         """Generate a list of traces."""
         traces = []
@@ -124,4 +154,81 @@ class TraceGenerator:
                 # Recursively generate traces for connected services
                 current_time += timedelta(seconds=conn_duration)
         
-        return traces 
+        return traces
+        
+    def pretty_print_traces(self, traces: List[Trace], max_traces: int = 10):
+        """
+        Print traces in a readable hierarchical format to visualize the service topology.
+        
+        Args:
+            traces: List of Trace objects to print
+            max_traces: Maximum number of top-level traces to print (to avoid console overflow)
+        """
+        if not traces:
+            print("No traces to display.")
+            return
+        
+        # Colors for status
+        GREEN = "\033[92m"
+        RED = "\033[91m"
+        BOLD = "\033[1m"
+        RESET = "\033[0m"
+        
+        # Group traces by their root trace (those without parent)
+        trace_map = {trace.trace_id: trace for trace in traces}
+        traces_by_parent = {}
+        root_traces = []
+        
+        for trace in traces:
+            if trace.parent_trace_id is None:
+                root_traces.append(trace)
+            else:
+                if trace.parent_trace_id not in traces_by_parent:
+                    traces_by_parent[trace.parent_trace_id] = []
+                traces_by_parent[trace.parent_trace_id].append(trace)
+        
+        # Stats
+        total_traces = len(traces)
+        success_count = sum(1 for trace in traces if trace.status == "success")
+        error_count = total_traces - success_count
+        
+        # Print summary
+        print(f"\n{BOLD}=== Trace Topology Summary ==={RESET}")
+        print(f"Total traces: {total_traces}")
+        print(f"Success: {GREEN}{success_count}{RESET} ({success_count/total_traces*100:.1f}%)")
+        print(f"Error: {RED}{error_count}{RESET} ({error_count/total_traces*100:.1f}%)")
+        print(f"Root traces: {len(root_traces)}")
+        print(f"Displaying first {min(max_traces, len(root_traces))} root traces\n")
+        
+        # Print trace hierarchies
+        displayed_count = 0
+        for root_trace in root_traces[:max_traces]:
+            displayed_count += 1
+            print(f"{BOLD}Trace Topology #{displayed_count}{RESET}")
+            
+            # Print recursively with proper indentation
+            def print_trace(trace, level=0):
+                indent = "  " * level
+                duration = (trace.end_time - trace.start_time).total_seconds()
+                status_color = GREEN if trace.status == "success" else RED
+                
+                print(f"{indent}├─ {BOLD}{trace.service_name}{RESET} ({trace.service_type})")
+                print(f"{indent}│  Status: {status_color}{trace.status}{RESET}")
+                print(f"{indent}│  Duration: {duration:.3f}s")
+                print(f"{indent}│  ID: {trace.trace_id}")
+                
+                # Print important metadata
+                if trace.metadata:
+                    metadata_str = ", ".join(f"{k}={v}" for k, v in trace.metadata.items())
+                    print(f"{indent}│  Metadata: {metadata_str}")
+                
+                # Print child traces
+                if trace.trace_id in traces_by_parent:
+                    for child in traces_by_parent[trace.trace_id]:
+                        print_trace(child, level + 1)
+            
+            print_trace(root_trace)
+            print()
+        
+        if len(root_traces) > max_traces:
+            print(f"... and {len(root_traces) - max_traces} more root traces (not displayed)") 
